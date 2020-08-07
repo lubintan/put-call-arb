@@ -19,7 +19,12 @@ binance = Exchange(1, 'binance', 'wss://stream.binance.com:9443/ws/'+'btcusdt@de
 kraken = Exchange(2, 'kraken', 'wss://ws.kraken.com', kraken_msg, None, 0.0026, 0.0005)
 
 WDRW_FEE = max(binance.withdraw_fee, kraken.withdraw_fee)
-SIZE_THRESH = 0.001 #ignore if there are orders in the spot order books smaller than this size
+SIZE_THRESH = 0.001 # ignore if there are orders in the spot order books smaller than this size
+PERIOD_DAYS = 7 # include BTC option instruments with expiry up to `PERIOD_DAYS` days from now.
+STREAM_INTERVAL = 0
+CPU_WORKER_INTERVAL = 0
+DB_INTERVAL = 0
+
 
 async def getInstruments():
     msg = \
@@ -58,8 +63,6 @@ class Pca:
 
     def __init__(self, channel_list):
 
-
-        self.ws = None
         self.loop = asyncio.get_event_loop()
         self.main_queue = multiprocessing.Queue(maxsize=7)
         self.sql_queue = multiprocessing.Queue(maxsize=7)
@@ -72,9 +75,8 @@ class Pca:
         self.streams = [
             self.sql_io(),
             self.deribit_stream(channel_list),
-            self.open_exchange_stream(kraken),
             self.open_exchange_stream(binance),
-
+            self.open_exchange_stream(kraken),
         ]
 
         options_table = pd.DataFrame(columns=['Expiry','Strike', 'Timestamp','CallBid', 'CallSize', 'PutAsk', 'PutSize'])
@@ -98,16 +100,14 @@ class Pca:
         self.loop.run_until_complete(asyncio.gather(*self.streams))
 
     async def pool_init(self, loop):
-        user = open('mysqlUser.key', 'r').read()
-        pwd = open('mysqlPwd.key', 'r').read()
-        self.pool =  await aiomysql.create_pool(
-            host='127.0.0.1', port=3306, user=user, password=pwd, db='mysql',loop=loop)
+        with open('mysqlUser.key', 'r') as f:
+            user = f.read()
+        with open('mysqlPwd.key', 'r') as f:
+            pwd = f.read()
+        self.pool =  await aiomysql.create_pool(host='127.0.0.1', port=3306, user=user, password=pwd, db='mysql',loop=loop)
 
     async def init_existing_tables(self):
         exist_tables = await self.sql_read("SHOW TABLES LIKE 'pca%'")
-
-        print(exist_tables)
-
         init_timestamp = datetime.now().timestamp()
         stmt_list = []
         for et in exist_tables:
@@ -116,15 +116,13 @@ class Pca:
             stmt += "VALUES ({}, {}, {}, {}, {}, '{}', {})".format(init_timestamp, 0,0,0,0,'None',0)
             stmt_list.append(stmt)
 
-        print(stmt_list)
         await self.sql_write(stmt_list)
 
     async def sql_read(self, stmt):
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(stmt)
-                r = await cur.fetchall()
-                return r
+                return await cur.fetchall()
 
     async def sql_write(self, stmt_list):
         async with self.pool.acquire() as conn:
@@ -136,12 +134,11 @@ class Pca:
     async def sql_io(self):
         while True:
             if self.sql_queue.empty():
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(DB_INTERVAL)
                 continue
             stmt_list = self.sql_queue.get()
             await self.sql_write(stmt_list)
             # self.sql_queue.task_done()
-
 
     async def deribit_stream(self,instr_list):
 
@@ -157,37 +154,27 @@ class Pca:
         msg = json.dumps(msg)
         async with connect(deribit.uri) as ws:
             await ws.send(msg)
-
             print('Initiated deribit stream.')
             while True:
-                try:
-                    response = await ws.recv()
-                    # print('deribit input:', response)
-                    self.main_queue.put((deribit.id,response))
-                except:
-                    print('retrying deribit')
-                    time.sleep(10)
-                    ws = connect(deribit.uri)
-
+                response = await ws.recv()
+                # Discard oldest data in queue if full
+                if self.main_queue.full():
+                    self.main_queue.get()
+                self.main_queue.put((deribit.id,response))
+                await asyncio.sleep(STREAM_INTERVAL)
 
     async def open_exchange_stream(self,exchange):
         async with connect(exchange.uri) as ws:
             if exchange.msg!= None:
                 await ws.send(exchange.msg)
-                print('Initiated {} stream.'.format(exchange.name))
+            print('Initiated {} stream.'.format(exchange.name))
             while True:
-                try:
-                    response = await ws.recv()
-                    # print((exchange.id, response))
-
-                    # Discard oldest data in queue if full
-                    if self.main_queue.full():
-                        self.main_queue.get()
-                    self.main_queue.put((exchange.id,response))
-                except:
-                    print('retrying', exchange.name)
-                    time.sleep(10)
-                    ws = connect(exchange.uri)
+                response = await ws.recv()
+                # Discard oldest data in queue if full
+                if self.main_queue.full():
+                    self.main_queue.get()
+                self.main_queue.put((exchange.id,response))
+                await asyncio.sleep(STREAM_INTERVAL)
 
     def start_workers(self):
 
@@ -226,7 +213,7 @@ class Pca:
                 binance_best_price = bnn_table.iloc[0]['Ask']
 
                 kkn_table = kkn_table[kkn_table['Size'] > SIZE_THRESH]
-                kkn_table.sort_values(by='Ask', inplace=True)
+                kkn_table = kkn_table.sort_values(by='Ask')
                 kraken_best_price = kkn_table.iloc[0]['Ask']
 
                 table = table[(table['CallBid'] > 0) & (table['PutAsk'] > 0) & (table['CallSize'] > 0) & (table['PutSize'] > 0)]
@@ -322,7 +309,7 @@ class Pca:
 
             # only return control of profit_table here
             self.profit_table_queue.put(profit_table)
-
+            time.sleep(CPU_WORKER_INTERVAL)
 
     def update_worker(self):
 
@@ -427,11 +414,12 @@ class Pca:
                         else:
                             kkn_table = kkn_table.drop(row.index)
                 self.kraken_table_queue.put(kkn_table)
+            time.sleep(CPU_WORKER_INTERVAL)
 
 if __name__ == '__main__':
 
-    print('Beginning time: {}'.format(datetime.now())
-    channel_list = get_channel_list(days=7)
+    print('Beginning time: {}'.format(datetime.now()))
+    channel_list = get_channel_list(days=PERIOD_DAYS)
 
     print('Number of option instruments: {}'.format(len(channel_list)))
     pca_obj = Pca(channel_list)
