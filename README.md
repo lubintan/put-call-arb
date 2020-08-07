@@ -4,7 +4,7 @@ Put-Call Parity describes the price relationship between puts and calls of optio
 
 Opportunities for arbitrage exist where pricing has deviated from this parity.
 
-This script obtains option prices from the [Deribit](www.deribit.com) options exchange and spot prices from various other exchanges to look for arbitrage opportunities.
+This script obtains option prices from the [Deribit](https://www.deribit.com/) options exchange and spot prices from various other exchanges to look for arbitrage opportunities.
 
 # Theory
 
@@ -152,7 +152,7 @@ Or it may be moved to a spot exchange and converted to realize profit in USDT. F
 ### Other Considerations
 Note that `K` is quoted in USD and for the computations here it is assumed that USD and USDT are tied at 1:1.
 
-#Implementation
+# Implementation
 
 ## Websocket IO
 The `asyncio` module is used here. Order book information is obtained from each exchange via websocket. These populate a queue asynchronously. Items from the queue are obtained and processed by `update_worker` described below.
