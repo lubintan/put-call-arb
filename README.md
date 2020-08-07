@@ -1,3 +1,19 @@
+# Table of Contents
+- [Introduction](#Introduction)
+- [Theory](#Theory)
+    - [Simplifications](#Simplifications)
+- [Use Case and Strategy](#UseCaseandStrategy)
+    - [Fees](#Fees)
+    - [Payout](#Payout)
+    - [Example](#Example)
+- [Implementation](#Implementation)
+    - [Websocket IO](#WebsocketIO)
+    - [Worker Processes](#WorkerProcesses)
+    - [Database](#Database)
+- [To-do List and Considerations](#To-doListandConsiderations)
+
+
+
 # Introduction
 
 Put-Call Parity describes the price relationship between puts and calls of options with the same expiry and strike price. 
