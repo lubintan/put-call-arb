@@ -2,15 +2,15 @@
 - [Introduction](#Introduction)
 - [Theory](#Theory)
     - [Simplifications](#Simplifications)
-- [Use Case and Strategy](#UseCaseandStrategy)
+- [Use Case and Strategy](#Use-Case-and-Strategy)
     - [Fees](#Fees)
     - [Payout](#Payout)
     - [Example](#Example)
 - [Implementation](#Implementation)
-    - [Websocket IO](#WebsocketIO)
-    - [Worker Processes](#WorkerProcesses)
+    - [Websocket IO](#Websocket-IO)
+    - [Worker Processes](#Worker-Processes)
     - [Database](#Database)
-- [To-do List and Considerations](#To-doListandConsiderations)
+- [To-do List and Considerations](#To-do-List-and-Considerations)
 
 
 
@@ -196,39 +196,3 @@ A MySQL database is used.
 - Trade execution  
     - At least 3 trades need to happen almost atomically. Need to consider management strategy if only some trades execute successfully.
     - Automate lending via DeFi or other platforms for reverse conversions. 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
