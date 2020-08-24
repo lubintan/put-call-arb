@@ -1,16 +1,16 @@
 # Table of Contents
-- [Introduction](#Introduction)
-- [Theory](#Theory)
-    - [Simplifications](#Simplifications)
-- [Use Case and Strategy](#Use-Case-and-Strategy)
-    - [Fees](#Fees)
-    - [Payout](#Payout)
-    - [Example](#Example)
-- [Implementation](#Implementation)
-    - [Websocket IO](#Websocket-IO)
-    - [Worker Processes](#Worker-Processes)
-    - [Database](#Database)
-- [To-do List and Considerations](#To-do-List-and-Considerations)
+- [Introduction](#introduction)
+- [Theory](#theory)
+    - [Simplifications](#simplifications)
+- [Use Case and Strategy](#use-case-and-strategy)
+    - [Fees](#fees)
+    - [Payout](#payout)
+    - [Example](#example)
+- [Implementation](#implementation)
+    - [Websocket IO](#websocket-io)
+    - [Worker Processes](#worker-processes)
+    - [Database](#database)
+- [To-do List and Considerations](#to-do-list-and-considerations)
 
 
 
