@@ -20,7 +20,7 @@ kraken = Exchange(2, 'kraken', 'wss://ws.kraken.com', kraken_msg, None, 0.0026, 
 
 WDRW_FEE = max(binance.withdraw_fee, kraken.withdraw_fee)
 SIZE_THRESH = 0.001 # ignore if there are orders in the spot order books smaller than this size
-PERIOD_DAYS = 7 # include BTC option instruments with expiry up to `PERIOD_DAYS` days from now.
+PERIOD_DAYS = 183 # include BTC option instruments with expiry up to `PERIOD_DAYS` days from now.
 STREAM_INTERVAL = 0
 CPU_WORKER_INTERVAL = 0
 DB_INTERVAL = 0
@@ -108,7 +108,7 @@ class Pca:
 
     async def init_existing_tables(self):
         exist_tables = await self.sql_read("SHOW TABLES LIKE 'pca%'")
-        init_timestamp = datetime.now().timestamp()
+        init_timestamp = int(datetime.now().timestamp() * 1000)
         stmt_list = []
         for et in exist_tables:
             table_name = et[0]
@@ -156,12 +156,27 @@ class Pca:
             await ws.send(msg)
             print('Initiated deribit stream.')
             while True:
-                response = await ws.recv()
-                # Discard oldest data in queue if full
-                if self.main_queue.full():
-                    self.main_queue.get()
-                self.main_queue.put((deribit.id,response))
-                await asyncio.sleep(STREAM_INTERVAL)
+                try:
+                    response = await ws.recv()
+                    # Discard oldest data in queue if full
+                    if self.main_queue.full():
+                        self.main_queue.get()
+                    self.main_queue.put((deribit.id,response))
+                    await asyncio.sleep(STREAM_INTERVAL)
+                except Exception as e:
+
+                    if not ws.open:
+                        while True:
+                            try:
+                                print('{}. reconnecting deribit..'.format(e))
+                                ws = await connect(deribit.uri)
+                                break
+                            except:
+                                print('Timestamp: {} UTC+8. Pause for awhile..'.format(datetime.now()))
+                                time.sleep(65)
+                                continue
+                    if ws.open:
+                        print('deribit reconnected.')
 
     async def open_exchange_stream(self,exchange):
         async with connect(exchange.uri) as ws:
@@ -169,12 +184,28 @@ class Pca:
                 await ws.send(exchange.msg)
             print('Initiated {} stream.'.format(exchange.name))
             while True:
-                response = await ws.recv()
-                # Discard oldest data in queue if full
-                if self.main_queue.full():
-                    self.main_queue.get()
-                self.main_queue.put((exchange.id,response))
-                await asyncio.sleep(STREAM_INTERVAL)
+                try:
+                    response = await ws.recv()
+                    # Discard oldest data in queue if full
+                    if self.main_queue.full():
+                        self.main_queue.get()
+                    # print(response)
+                    self.main_queue.put((exchange.id,response))
+                    await asyncio.sleep(STREAM_INTERVAL)
+                except Exception as e:
+
+                    if not ws.open:
+                        while True:
+                            try:
+                                print('{}. reconnecting {}..'.format(e, exchange.name))
+                                ws = await connect(exchange.uri)
+                                break
+                            except:
+                                print('Timestamp: {} UTC+8. Pause for awhile..'.format(datetime.now()))
+                                time.sleep(65)
+                                continue
+                    if ws.open:
+                        print('{} reconnected.'.format(exchange.name))
 
     def start_workers(self):
 
@@ -193,7 +224,7 @@ class Pca:
             # read
             options_table = self.options_table_queue.get()
             table = options_table.copy()
-            sql_timestamp = datetime.now().timestamp()
+            sql_timestamp = int(datetime.now().timestamp()*1000)
 
             prev_timestamp, bnn_table = self.binance_table_queue.get()
             kkn_table = self.kraken_table_queue.get()
@@ -204,107 +235,112 @@ class Pca:
             self.options_table_queue.put(options_table)
             self.binance_table_queue.put((prev_timestamp, bnn_table))
             self.kraken_table_queue.put(kkn_table)
+            try:
+                if (len(table)>0) and (len(bnn_table)>0) and (len(kkn_table)>0):
 
-            if len(table)>0 and len(bnn_table)>0 and len(kkn_table)>0:
+                    # columns=['Expiry', 'Strike', 'Timestamp', 'CallBid', 'CallSize', 'PutAsk', 'PutSize']
 
-                # columns=['Expiry', 'Strike', 'Timestamp', 'CallBid', 'CallSize', 'PutAsk', 'PutSize']
+                    bnn_table = bnn_table[bnn_table['Size'] > SIZE_THRESH]
+                    binance_best_price = bnn_table.iloc[0]['Ask']
 
-                bnn_table = bnn_table[bnn_table['Size'] > SIZE_THRESH]
-                binance_best_price = bnn_table.iloc[0]['Ask']
+                    kkn_table = kkn_table[kkn_table['Size'] > SIZE_THRESH]
+                    kkn_table = kkn_table.sort_values(by='Ask')
+                    kraken_best_price = kkn_table.iloc[0]['Ask']
 
-                kkn_table = kkn_table[kkn_table['Size'] > SIZE_THRESH]
-                kkn_table = kkn_table.sort_values(by='Ask')
-                kraken_best_price = kkn_table.iloc[0]['Ask']
+                    table = table[(table['CallBid'] > 0) & (table['PutAsk'] > 0) & (table['CallSize'] > 0) & (table['PutSize'] > 0)]
 
-                table = table[(table['CallBid'] > 0) & (table['PutAsk'] > 0) & (table['CallSize'] > 0) & (table['PutSize'] > 0)]
+                    table['ProfitableSo'] = table['Strike'].values / (1 + deribit.fee + WDRW_FEE + table['PutAsk'].values - table['CallBid'].values)
 
-                table['ProfitableSo'] = table['Strike'].values / (1 + deribit.fee + WDRW_FEE + table['PutAsk'].values - table['CallBid'].values)
+                    binance_profit_rate = table['ProfitableSo'].values - (binance_best_price / (1 - binance.fee_percent))
+                    kraken_profit_rate =  table['ProfitableSo'].values - (kraken_best_price  / (1 - kraken.fee_percent))
 
-                binance_profit_rate = table['ProfitableSo'].values - (binance_best_price / (1 - binance.fee_percent))
-                kraken_profit_rate =  table['ProfitableSo'].values - (kraken_best_price  / (1 - kraken.fee_percent))
+                    binance_best_size = np.minimum(np.minimum(table['CallSize'].values, table['PutSize'].values),bnn_table.iloc[0]['Size'])
+                    kraken_best_size = np.minimum(np.minimum(table['CallSize'].values, table['PutSize'].values), kkn_table.iloc[0]['Size'])
 
-                binance_best_size = np.minimum(np.minimum(table['CallSize'].values, table['PutSize'].values),bnn_table.iloc[0]['Size'])
-                kraken_best_size = np.minimum(np.minimum(table['CallSize'].values, table['PutSize'].values), kkn_table.iloc[0]['Size'])
+                    binance_profit = binance_best_size * binance_profit_rate
+                    kraken_profit = kraken_best_size * kraken_profit_rate
 
-                binance_profit = binance_best_size * binance_profit_rate
-                kraken_profit = kraken_best_size * kraken_profit_rate
+                    condition = binance_profit > kraken_profit
 
-                condition = binance_profit > kraken_profit
+                    table['Exchange'] = np.where(condition, binance.name, kraken.name)
+                    table['SpotAsk'] = np.where(condition, binance_best_price, kraken_best_price)
+                    table['Size'] = np.where(condition, binance_best_size, kraken_best_size)
+                    table['Profit'] = np.where(condition, binance_profit, kraken_profit)
 
-                table['Exchange'] = np.where(condition, binance.name, kraken.name)
-                table['SpotAsk'] = np.where(condition, binance_best_price, kraken_best_price)
-                table['Size'] = np.where(condition, binance_best_size, kraken_best_size)
-                table['Profit'] = np.where(condition, binance_profit, kraken_profit)
+                    profitable = table[table['Profit'] > 0]
 
-                profitable = table[table['Profit'] > 0]
-
-                changes = profit_table.merge(profitable, how='outer', indicator='merger', on=['Expiry', 'Strike'])
-
-                if len(changes) > 0:
-                    changes = changes[changes['Size_x'] != changes['Size_y']]
+                    changes = profit_table.merge(profitable, how='outer', indicator='merger', on=['Expiry', 'Strike'])
 
                     if len(changes) > 0:
+                        changes = changes[changes['Size_x'] != changes['Size_y']]
 
-                        to_drop_keys = changes[changes['merger'] == 'left_only']['Expiry'].values, changes[changes['merger'] == 'left_only']['Strike'].values
-                        to_append_keys = changes[changes['merger'] == 'right_only']['Expiry'].values, changes[changes['merger'] == 'right_only']['Strike'].values
-                        to_update_keys = changes[changes['merger'] == 'both']['Expiry'].values, changes[changes['merger'] == 'both']['Strike'].values
+                        if len(changes) > 0:
 
-                        #region: create sql statements
-                        stmt_list = []
+                            to_drop_keys = changes[changes['merger'] == 'left_only']['Expiry'].values, changes[changes['merger'] == 'left_only']['Strike'].values
+                            to_append_keys = changes[changes['merger'] == 'right_only']['Expiry'].values, changes[changes['merger'] == 'right_only']['Strike'].values
+                            to_update_keys = changes[changes['merger'] == 'both']['Expiry'].values, changes[changes['merger'] == 'both']['Strike'].values
 
-                        for i in range(len(to_drop_keys[0])):
-                            expiry = to_drop_keys[0][i]
-                            strike = to_drop_keys[1][i]
-                            table_name = 'PCA_BTC_{}_{}'.format(expiry,int(strike))
+                            #region: create sql statements
+                            stmt_list = []
 
-                            stmt = "INSERT INTO {} (timestamp, callbid, putask, spotask, size, exchange, profit) ".format(
-                                table_name)
-                            stmt += "VALUES ({}, {}, {}, {}, {}, '{}', {})".format(sql_timestamp, 0, 0, 0, 0, 'None', 0)
-                            stmt_list.append(stmt)
+                            for i in range(len(to_drop_keys[0])):
+                                expiry = to_drop_keys[0][i]
+                                strike = to_drop_keys[1][i]
+                                table_name = 'PCA_BTC_{}_{}'.format(expiry,int(strike))
 
-                        for i in range(len(to_update_keys[0])):
-                            expiry = to_update_keys[0][i]
-                            strike = to_update_keys[1][i]
-                            table_name = 'PCA_BTC_{}_{}'.format(expiry, int(strike))
-                            row = profitable[(profitable['Expiry'] == expiry) & (profitable['Strike'] == strike)]
+                                stmt = "INSERT INTO {} (timestamp, callbid, putask, spotask, size, exchange, profit) ".format(
+                                    table_name)
+                                stmt += "VALUES ({}, {}, {}, {}, {}, '{}', {})".format(sql_timestamp, 0, 0, 0, 0, 'None', 0)
+                                stmt_list.append(stmt)
 
-                            stmt = "INSERT INTO {} (timestamp, callbid, putask, spotask, size, exchange, profit) ".format(
-                                table_name)
-                            stmt += "VALUES ({}, {}, {}, {}, {}, '{}', {})".format(
-                                sql_timestamp, row['CallBid'].values[0], row['PutAsk'].values[0], row['SpotAsk'].values[0], row['Size'].values[0],
-                                row['Exchange'].values[0], row['Profit'].values[0])
+                            for i in range(len(to_update_keys[0])):
+                                expiry = to_update_keys[0][i]
+                                strike = to_update_keys[1][i]
+                                table_name = 'PCA_BTC_{}_{}'.format(expiry, int(strike))
+                                row = profitable[(profitable['Expiry'] == expiry) & (profitable['Strike'] == strike)]
 
-                            stmt_list.append(stmt)
+                                stmt = "INSERT INTO {} (timestamp, callbid, putask, spotask, size, exchange, profit) ".format(
+                                    table_name)
+                                stmt += "VALUES ({}, {}, {}, {}, {}, '{}', {})".format(
+                                    sql_timestamp, row['CallBid'].values[0], row['PutAsk'].values[0], row['SpotAsk'].values[0], row['Size'].values[0],
+                                    row['Exchange'].values[0], row['Profit'].values[0])
 
-                        for i in range(len(to_append_keys[0])):
-                            expiry = to_append_keys[0][i]
-                            strike = to_append_keys[1][i]
-                            table_name = 'PCA_BTC_{}_{}'.format(expiry, int(strike))
-                            row = profitable[(profitable['Expiry'] == expiry) & (profitable['Strike'] == strike)]
+                                stmt_list.append(stmt)
 
-                            stmt = "CREATE TABLE IF NOT EXISTS {} ".format(table_name)
-                            stmt += "(idx INT UNSIGNED NOT NULL AUTO_INCREMENT,"
-                            stmt += "timestamp FLOAT NOT NULL,"
-                            stmt += "callbid FLOAT NOT NULL,"
-                            stmt += "putask FLOAT NOT NULL,"
-                            stmt += "spotask FLOAT NOT NULL,"
-                            stmt += "size FLOAT NOT NULL,"
-                            stmt += "exchange VARCHAR(16) NOT NULL,"
-                            stmt += "profit FLOAT NOT NULL,"
-                            stmt += "PRIMARY KEY(idx))"
+                            for i in range(len(to_append_keys[0])):
+                                expiry = to_append_keys[0][i]
+                                strike = to_append_keys[1][i]
+                                table_name = 'PCA_BTC_{}_{}'.format(expiry, int(strike))
+                                row = profitable[(profitable['Expiry'] == expiry) & (profitable['Strike'] == strike)]
 
-                            stmt_list.append(stmt)
+                                stmt = "CREATE TABLE IF NOT EXISTS {} ".format(table_name)
+                                stmt += "(idx INT UNSIGNED NOT NULL AUTO_INCREMENT,"
+                                stmt += "timestamp BIGINT NOT NULL,"
+                                stmt += "callbid FLOAT NOT NULL,"
+                                stmt += "putask FLOAT NOT NULL,"
+                                stmt += "spotask FLOAT NOT NULL,"
+                                stmt += "size FLOAT NOT NULL,"
+                                stmt += "exchange VARCHAR(16) NOT NULL,"
+                                stmt += "profit FLOAT NOT NULL,"
+                                stmt += "PRIMARY KEY(idx))"
 
-                            stmt = "INSERT INTO {} (timestamp, callbid, putask, spotask, size, exchange, profit) ".format(table_name)
-                            stmt+= "VALUES ({}, {}, {}, {}, {}, '{}', {})".format(
-                                sql_timestamp, row['CallBid'].values[0], row['PutAsk'].values[0], row['SpotAsk'].values[0], row['Size'].values[0],
-                                row['Exchange'].values[0],row['Profit'].values[0])
+                                stmt_list.append(stmt)
 
-                            stmt_list.append(stmt)
-                        #endregion
-                        self.sql_queue.put(stmt_list)
+                                stmt = "INSERT INTO {} (timestamp, callbid, putask, spotask, size, exchange, profit) ".format(table_name)
+                                stmt+= "VALUES ({}, {}, {}, {}, {}, '{}', {})".format(
+                                    sql_timestamp, row['CallBid'].values[0], row['PutAsk'].values[0], row['SpotAsk'].values[0], row['Size'].values[0],
+                                    row['Exchange'].values[0],row['Profit'].values[0])
 
-                        profit_table = profitable.copy()
+                                stmt_list.append(stmt)
+                            #endregion
+                            self.sql_queue.put(stmt_list)
+
+                            profit_table = profitable.copy()
+            except:
+                print('=== bnn_table ===')
+                print(bnn_table)
+                print(len(bnn_table))
+                print(len(bnn_table) > 0)
 
 
             # only return control of profit_table here
