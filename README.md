@@ -163,7 +163,7 @@ Exchange: -10,961.36 USDT
 
 
 Or it may be moved to a spot exchange and converted to realize profit in USDT. Further withdrawal and transaction costs would need to be factored in here, an example computation is:  
-11,000 * 0.999 - 6 - 10,972.34 = 10.66 USDT
+11,000 * 0.999 - 6 - 10,961.36 = 21.64 USDT
 
 ### Other Considerations
 Note that `K` is quoted in USD and for the computations here it is assumed that USD and USDT are tied at 1:1.
